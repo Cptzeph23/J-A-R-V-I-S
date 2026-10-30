@@ -1,0 +1,60 @@
+# NOTE: written in Phase 1 but not yet executed on GitHub. Verify action versions on first run.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jarvis
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: jarvis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jarvis"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DB_PASSWORD: ci_only_password
+      DB_HOST: 127.0.0.1
+      REDIS_URL: redis://127.0.0.1:6379/0
+      DJANGO_SETTINGS_MODULE: config.settings.test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements/*.txt
+      - run: pip install -r requirements/dev.txt
+      - run: pip check
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy .
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python -m pytest --cov --cov-report=term-missing
+      - name: Production settings sanity (check --deploy)
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.prod
+          ALLOWED_HOSTS: example.com
+        run: |
+          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(64))')"
+          python manage.py check --deploy
